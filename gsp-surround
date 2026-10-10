@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# gsp-surround: virtual 7.1 surround + EQ presets for GSP headset dongles on Linux.
+#   gsp-surround                      open the app
+#   gsp-surround preset off|game|music|esport
+#   gsp-surround surround on|off
+#   gsp-surround check                show what is installed / missing
+#   gsp-surround install [--yes] [--ir FILE] [--profile NAME]
+#   gsp-surround apply                re-apply (what the background service does at login / plug-in)
+#   gsp-surround uninstall
+here="$(dirname "$(readlink -f "$0")")"
+cmd="${1:-app}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  app|gui)
+    if ! python3 -c "import gi; gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1'); from gi.repository import Adw" 2>/dev/null; then
+      echo "The app needs Python bindings for GTK 4 and libadwaita. Install them with one of:"
+      echo "  Debian/Ubuntu:  sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1"
+      echo "  Fedora:         sudo dnf install python3-gobject gtk4 libadwaita"
+      echo "  Arch:           sudo pacman -S python-gobject gtk4 libadwaita"
+      echo "  openSUSE:       sudo zypper install python3-gobject typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1"
+      echo "or run '$0 install', which installs everything including these."
+      exit 1
+    fi
+    exec python3 "$here/app/gsp_surround.py" ;;
+  preset)    exec bash "$here/scripts/preset.sh" "$@" ;;
+  surround)  exec bash "$here/scripts/surround.sh" "$@" ;;
+  check)     exec python3 "$here/app/backend.py" check ;;
+  install)   exec bash "$here/scripts/install.sh" "$@" ;;
+  apply)     exec bash "$here/scripts/apply.sh" ;;
+  uninstall) exec bash "$here/scripts/uninstall.sh" ;;
+  -h|--help|help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) echo "unknown command '$cmd' (try: $0 help)"; exit 1 ;;
+esac

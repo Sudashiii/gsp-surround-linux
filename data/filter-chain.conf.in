@@ -1,0 +1,95 @@
+# Virtual 7.1 surround for GSP-family headset dongles (PipeWire filter-chain).
+# Installed by gsp-surround-linux (scripts/install.sh). 8 inputs x 2 ears = 16 convolvers with the
+# measured filter file of the profile (from gsp-surround-irs), summed per ear. "Gain 4" of both
+# mixers is the LFE level of the current preset; the dongle EQ preset is set separately via HID.
+context.modules = [
+  { name = libpipewire-module-filter-chain
+    flags = [ nofail ]
+    args = {
+      node.description = "GSP Virtual Surround 7.1"
+      media.name       = "GSP Virtual Surround 7.1"
+      filter.graph = {
+        nodes = [
+          { type = builtin label = copy name = copyFL }
+          { type = builtin label = convolver name = convFL_L config = { filename = "@IR_PATH@" channel = 0 } }
+          { type = builtin label = convolver name = convFL_R config = { filename = "@IR_PATH@" channel = 1 } }
+          { type = builtin label = copy name = copyFR }
+          { type = builtin label = convolver name = convFR_L config = { filename = "@IR_PATH@" channel = 2 } }
+          { type = builtin label = convolver name = convFR_R config = { filename = "@IR_PATH@" channel = 3 } }
+          { type = builtin label = copy name = copyFC }
+          { type = builtin label = convolver name = convFC_L config = { filename = "@IR_PATH@" channel = 4 } }
+          { type = builtin label = convolver name = convFC_R config = { filename = "@IR_PATH@" channel = 5 } }
+          { type = builtin label = copy name = copyLFE }
+          { type = builtin label = convolver name = convLFE_L config = { filename = "@IR_PATH@" channel = 6 } }
+          { type = builtin label = convolver name = convLFE_R config = { filename = "@IR_PATH@" channel = 7 } }
+          { type = builtin label = copy name = copyRL }
+          { type = builtin label = convolver name = convRL_L config = { filename = "@IR_PATH@" channel = 8 } }
+          { type = builtin label = convolver name = convRL_R config = { filename = "@IR_PATH@" channel = 9 } }
+          { type = builtin label = copy name = copyRR }
+          { type = builtin label = convolver name = convRR_L config = { filename = "@IR_PATH@" channel = 10 } }
+          { type = builtin label = convolver name = convRR_R config = { filename = "@IR_PATH@" channel = 11 } }
+          { type = builtin label = copy name = copySL }
+          { type = builtin label = convolver name = convSL_L config = { filename = "@IR_PATH@" channel = 12 } }
+          { type = builtin label = convolver name = convSL_R config = { filename = "@IR_PATH@" channel = 13 } }
+          { type = builtin label = copy name = copySR }
+          { type = builtin label = convolver name = convSR_L config = { filename = "@IR_PATH@" channel = 14 } }
+          { type = builtin label = convolver name = convSR_R config = { filename = "@IR_PATH@" channel = 15 } }
+          { type = builtin label = mixer name = mixL control = { "Gain 4" = @LFE_GAIN@ } }
+          { type = builtin label = mixer name = mixR control = { "Gain 4" = @LFE_GAIN@ } }
+        ]
+        links = [
+          { output = "copyFL:Out" input = "convFL_L:In" }
+          { output = "convFL_L:Out" input = "mixL:In 1" }
+          { output = "copyFL:Out" input = "convFL_R:In" }
+          { output = "convFL_R:Out" input = "mixR:In 1" }
+          { output = "copyFR:Out" input = "convFR_L:In" }
+          { output = "convFR_L:Out" input = "mixL:In 2" }
+          { output = "copyFR:Out" input = "convFR_R:In" }
+          { output = "convFR_R:Out" input = "mixR:In 2" }
+          { output = "copyFC:Out" input = "convFC_L:In" }
+          { output = "convFC_L:Out" input = "mixL:In 3" }
+          { output = "copyFC:Out" input = "convFC_R:In" }
+          { output = "convFC_R:Out" input = "mixR:In 3" }
+          { output = "copyLFE:Out" input = "convLFE_L:In" }
+          { output = "convLFE_L:Out" input = "mixL:In 4" }
+          { output = "copyLFE:Out" input = "convLFE_R:In" }
+          { output = "convLFE_R:Out" input = "mixR:In 4" }
+          { output = "copyRL:Out" input = "convRL_L:In" }
+          { output = "convRL_L:Out" input = "mixL:In 5" }
+          { output = "copyRL:Out" input = "convRL_R:In" }
+          { output = "convRL_R:Out" input = "mixR:In 5" }
+          { output = "copyRR:Out" input = "convRR_L:In" }
+          { output = "convRR_L:Out" input = "mixL:In 6" }
+          { output = "copyRR:Out" input = "convRR_R:In" }
+          { output = "convRR_R:Out" input = "mixR:In 6" }
+          { output = "copySL:Out" input = "convSL_L:In" }
+          { output = "convSL_L:Out" input = "mixL:In 7" }
+          { output = "copySL:Out" input = "convSL_R:In" }
+          { output = "convSL_R:Out" input = "mixR:In 7" }
+          { output = "copySR:Out" input = "convSR_L:In" }
+          { output = "convSR_L:Out" input = "mixL:In 8" }
+          { output = "copySR:Out" input = "convSR_R:In" }
+          { output = "convSR_R:Out" input = "mixR:In 8" }
+        ]
+        inputs  = [ "copyFL:In" "copyFR:In" "copyFC:In" "copyLFE:In" "copyRL:In" "copyRR:In" "copySL:In" "copySR:In" ]
+        outputs = [ "mixL:Out" "mixR:Out" ]
+      }
+      capture.props = {
+        node.name      = "effect_input.gsp_surround"
+        media.class    = Audio/Sink
+        audio.rate     = 48000
+        audio.channels = 8
+        audio.position = [ FL FR FC LFE RL RR SL SR ]
+      }
+      playback.props = {
+        node.name        = "effect_output.gsp_surround"
+        node.passive     = true
+        audio.rate       = 48000
+        audio.channels   = 2
+        audio.position   = [ FL FR ]
+        # linked explicitly to the dongle's main path (sink "gsp_surround.main") by scripts/apply.sh
+        node.autoconnect = false
+      }
+    }
+  }
+]

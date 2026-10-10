@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=GSP Surround
+Comment=Virtual 7.1 surround and EQ presets for GSP headsets
+Exec=@BIN@
+Icon=gsp-surround
+Terminal=false
+Categories=AudioVideo;Audio;Settings;
+Keywords=headset;surround;7.1;gsp;sennheiser;epos;

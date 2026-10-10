@@ -1,0 +1,11 @@
+[Unit]
+Description=gsp-surround: virtual 7.1 surround for the GSP headset dongle (EQ preset, main-path sink, filter links)
+After=pipewire.service wireplumber.service pipewire-pulse.service
+PartOf=pipewire.service
+
+[Service]
+Type=oneshot
+ExecStart=@APPLY@
+
+[Install]
+WantedBy=pipewire.service
