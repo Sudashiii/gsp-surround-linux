@@ -14,7 +14,8 @@ import sys
 import tempfile
 import urllib.request
 
-IRS_BASE = "https://raw.githubusercontent.com/Sudashiii/gsp-surround-irs/v1"
+# GSP_IRS_BASE points to another location (a mirror, or file:///... for offline use and tests)
+IRS_BASE = os.environ.get("GSP_IRS_BASE", "https://raw.githubusercontent.com/Sudashiii/gsp-surround-irs/v1")
 # hashes pinned in the app, so a changed upstream file is noticed
 PINNED = {"gsp350": "45cfbaab0629583843d6d2dc328152cc94d0368e514de71370521f8b7d684c25"}
 # used when the index can't be downloaded but a local file is given

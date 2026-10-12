@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Install gsp-surround for the current user.
 #   bash scripts/install.sh [--yes] [--ir FILE] [--profile NAME]
-#     --yes          don't ask (used by the app's "Install everything" button)
+#     --yes          don't ask (used by the app's "Install everything" / "Set up" button)
 #     --ir FILE      use a local filter file instead of downloading it from gsp-surround-irs
 #     --profile NAME filter profile (default: from data/devices.conf for the connected dongle, else gsp350)
-# Root is needed once (packages if missing, udev rule): sudo in a terminal, pkexec from the app.
+# From a clone (or the per-user copy) this copies the app into ~/.local/share/gsp-surround/app and adds
+# the menu entry, command and service. When the app was installed by the .deb or `make install`
+# (a PACKAGED file next to this script's folder) the files are already in place and only the per-user
+# setup is done: filter file, PipeWire config, sound-server check; no password then.
+# Root is needed only if packages are missing or the udev rule has to change: sudo in a terminal,
+# pkexec from the app.
 set -eu
 here="$(dirname "$(readlink -f "$0")")"
 . "$here/common.sh"
@@ -50,19 +55,22 @@ else
   echo "  all present"
 fi
 
-# --- root part: packages + udev rule (one password prompt) ------------------------------------
-echo "== root setup (packages: ${need_pkgs:-no}, udev rule)"
+# --- root part: packages + udev rule (one password prompt, and only if something has to change) -
 mkdir -p "$GSP_DATA" "$GSP_CONF"
 rules="$GSP_DATA/70-gsp-surround.rules"
-{
-  echo "# gsp-surround: give the logged-in user access to the dongle's HID interface (EQ preset) and"
-  echo "# start the user's gsp-surround.service when the dongle is plugged in."
-  for id in $(target_ids); do
-    echo "SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"${id%%:*}\", ATTRS{idProduct}==\"${id##*:}\", TAG+=\"uaccess\", TAG+=\"systemd\", ENV{SYSTEMD_USER_WANTS}+=\"gsp-surround.service\""
-  done
-} > "$rules"
-args=(--udev "$rules"); [ -n "$need_pkgs" ] && args=(--packages "${args[@]}")
-as_root "$(command -v bash)" "$here/root-setup.sh" "${args[@]}"
+trap 'rm -f "$rules"' EXIT
+udev_rules $(target_ids) > "$rules"
+current_rule=$(installed_udev_rule)
+rule_changed=""
+if [ -z "$need_pkgs" ] && [ -n "$current_rule" ] && cmp -s "$rules" "$current_rule"; then
+  echo "== root setup"
+  echo "  device rule is up to date ($current_rule), no password needed"
+else
+  echo "== root setup (packages: ${need_pkgs:-no}, udev rule)"
+  args=(--udev "$rules"); [ -n "$need_pkgs" ] && args=(--packages "${args[@]}")
+  as_root "$(command -v bash)" "$here/root-setup.sh" "${args[@]}"
+  rule_changed=1
+fi
 miss=$(missing_tools)
 case "$miss" in *pw-*|*wpctl*|*python3*|*systemctl*) echo "still missing: $miss"; exit 1;; esac
 
@@ -96,20 +104,42 @@ if [ -e "$HOME/.config/systemd/user/gsp350.service" ] || [ -e "$PW_CONFD/gsp350-
 fi
 
 # --- app files ---------------------------------------------------------------------------------
+# An earlier per-user install of the app (copy in ~/.local/share, command link, menu entry, icon,
+# service) is replaced by the system-wide one. Only what that installer created is removed.
+migrate_user_install() {
+  local old="$GSP_DATA/app" bin="$HOME/.local/bin/gsp-surround" found=""
+  local desktop="$HOME/.local/share/applications/gsp-surround.desktop"
+  local unit="$HOME/.config/systemd/user/gsp-surround.service"
+  if [ -d "$old" ]; then rm -rf "$old"; found=1; fi
+  if [ -L "$bin" ] && [ "$(readlink "$bin")" = "$old/gsp-surround" ]; then rm -f "$bin"; found=1; fi
+  if [ -f "$desktop" ] && grep -qF "Exec=$old/" "$desktop"; then
+    rm -f "$desktop" "$HOME/.local/share/icons/hicolor/scalable/apps/gsp-surround.svg"; found=1
+  fi
+  if [ -f "$unit" ] && grep -qF "$old/" "$unit"; then rm -f "$unit"; found=1; fi
+  [ -z "$found" ] || echo "  replaced the older per-user copy of the app"
+  return 0
+}
+
 echo "== app"
-app="$GSP_DATA/app"
-if [ "$GSP_ROOT" != "$app" ]; then
-  rm -rf "$app"; mkdir -p "$app"
-  cp -r "$GSP_ROOT/gsp-surround" "$GSP_ROOT/app" "$GSP_ROOT/scripts" "$GSP_ROOT/data" "$app/"
-  cp "$GSP_ROOT/README.md" "$GSP_ROOT/LICENSE" "$app/" 2>/dev/null || true
-  rm -rf "$app/app/__pycache__"
+if packaged; then
+  app="$GSP_ROOT"
+  echo "  installed system-wide in $app"
+  migrate_user_install
+else
+  app="$GSP_DATA/app"
+  if [ "$GSP_ROOT" != "$app" ]; then
+    rm -rf "$app"; mkdir -p "$app"
+    cp -r "$GSP_ROOT/gsp-surround" "$GSP_ROOT/app" "$GSP_ROOT/scripts" "$GSP_ROOT/data" "$app/"
+    cp "$GSP_ROOT/README.md" "$GSP_ROOT/LICENSE" "$GSP_ROOT/VERSION" "$app/" 2>/dev/null || true
+    rm -rf "$app/app/__pycache__"
+  fi
+  chmod +x "$app/gsp-surround" "$app"/scripts/*.sh "$app"/scripts/*.py
+  mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications" "$HOME/.local/share/icons/hicolor/scalable/apps"
+  ln -sf "$app/gsp-surround" "$HOME/.local/bin/gsp-surround"
+  sed "s|@BIN@|$app/gsp-surround|" "$app/data/gsp-surround.desktop" > "$HOME/.local/share/applications/gsp-surround.desktop"
+  cp "$app/data/icons/hicolor/scalable/apps/gsp-surround.svg" "$HOME/.local/share/icons/hicolor/scalable/apps/gsp-surround.svg"
+  echo "  $app, app menu entry \"GSP Surround\""
 fi
-chmod +x "$app/gsp-surround" "$app"/scripts/*.sh "$app"/scripts/*.py
-mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications" "$HOME/.local/share/icons/hicolor/scalable/apps"
-ln -sf "$app/gsp-surround" "$HOME/.local/bin/gsp-surround"
-sed "s|@BIN@|$app/gsp-surround|" "$app/data/gsp-surround.desktop" > "$HOME/.local/share/applications/gsp-surround.desktop"
-cp "$app/data/icons/hicolor/scalable/apps/gsp-surround.svg" "$HOME/.local/share/icons/hicolor/scalable/apps/gsp-surround.svg"
-echo "  $app, app menu entry \"GSP Surround\""
 
 # --- filter file --------------------------------------------------------------------------------
 echo "== filter file"
@@ -128,21 +158,25 @@ sed -e "s|@IR_PATH@|$GSP_IR|g" -e "s|@LFE_GAIN@|$(preset_lfe "$(saved_preset)")|
 # --- ~/.local/bin on PATH -----------------------------------------------------------------------
 echo "== PATH"
 path_added=""
-case ":$PATH:" in
-  *":$HOME/.local/bin:"*) echo "  ~/.local/bin already on PATH" ;;
-  *)
-    for rc in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
-      { [ "$rc" = "$HOME/.profile" ] || [ -f "$rc" ]; } || continue
-      grep -qF "$PATH_MARK" "$rc" 2>/dev/null && continue
-      printf '\n%s\nexport PATH="$HOME/.local/bin:$PATH"\n' "$PATH_MARK" >> "$rc"
-      echo "  added ~/.local/bin to PATH in $rc"; path_added=1
-    done
-    if command -v fish >/dev/null 2>&1; then
-      fish -c 'contains ~/.local/bin $fish_user_paths; or set -Ua fish_user_paths ~/.local/bin' \
-        && echo "  added ~/.local/bin to fish_user_paths" && path_added=1
-    fi
-    ;;
-esac
+if packaged; then
+  echo "  not needed, the command is installed system-wide"
+else
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) echo "  ~/.local/bin already on PATH" ;;
+    *)
+      for rc in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
+        { [ "$rc" = "$HOME/.profile" ] || [ -f "$rc" ]; } || continue
+        grep -qF "$PATH_MARK" "$rc" 2>/dev/null && continue
+        printf '\n%s\nexport PATH="$HOME/.local/bin:$PATH"\n' "$PATH_MARK" >> "$rc"
+        echo "  added ~/.local/bin to PATH in $rc"; path_added=1
+      done
+      if command -v fish >/dev/null 2>&1; then
+        fish -c 'contains ~/.local/bin $fish_user_paths; or set -Ua fish_user_paths ~/.local/bin' \
+          && echo "  added ~/.local/bin to fish_user_paths" && path_added=1
+      fi
+      ;;
+  esac
+fi
 
 # --- no automatic stereo upmix (the Windows driver fed stereo apps only to front L/R) ----------
 for d in pipewire-pulse.conf.d client.conf.d client-rt.conf.d; do
@@ -152,16 +186,21 @@ done
 
 # --- service --------------------------------------------------------------------------------------
 echo "== systemd user service"
-mkdir -p "$HOME/.config/systemd/user"
-sed "s|@APPLY@|$app/scripts/apply.sh|" "$app/data/gsp-surround.service.in" > "$HOME/.config/systemd/user/gsp-surround.service"
+if packaged; then
+  echo "  provided by the package"
+else
+  mkdir -p "$HOME/.config/systemd/user"
+  sed "s|@APPLY@|$app/scripts/apply.sh|" "$app/data/gsp-surround.service.in" > "$HOME/.config/systemd/user/gsp-surround.service"
+fi
 systemctl --user daemon-reload
-systemctl --user enable gsp-surround.service
+packaged || systemctl --user enable gsp-surround.service
 
 echo "== restart PipeWire and apply"
 systemctl --user restart pipewire pipewire-pulse wireplumber
 sleep 3
 "$app/scripts/apply.sh" || true
 echo
-echo "Done. Unplug and replug the dongle once, so the new udev rule gives access to its EQ control."
-[ -n "$path_added" ] && echo "Open a new terminal to use the 'gsp-surround' command."
+echo "Done."
+[ -z "$rule_changed" ] || echo "Unplug and replug the dongle once, so the new udev rule gives access to its EQ control."
+[ -z "$path_added" ] || echo "Open a new terminal to use the 'gsp-surround' command."
 exit 0

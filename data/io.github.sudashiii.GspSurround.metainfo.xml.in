@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Template: `make install` fills in @VERSION@ and @DATE@ (from the VERSION file and the commit date). -->
+<component type="desktop-application">
+  <id>io.github.sudashiii.GspSurround</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>GSP Surround</name>
+  <summary>Virtual 7.1 surround and EQ presets for GSP headsets</summary>
+  <description>
+    <p>
+      Recreates what the Windows driver does for Sennheiser GSP gaming headsets on Linux: virtual
+      7.1 surround through a filter measured from the original driver, and the EQ presets of the
+      headset dongle (Off, Game, Music, eSports).
+    </p>
+    <p>
+      Made for the GSP 350 and PipeWire. Other headsets that use the same dongle may work too.
+      Not affiliated with, endorsed by or connected to Sennheiser, EPOS, Conexant or Dolby Laboratories.
+    </p>
+    <p>
+      Open the app, go to the Setup tab and click Set up. The filter file is downloaded once; no
+      password is needed.
+    </p>
+  </description>
+  <launchable type="desktop-id">gsp-surround.desktop</launchable>
+  <url type="homepage">https://github.com/Sudashiii/gsp-surround-linux</url>
+  <url type="bugtracker">https://github.com/Sudashiii/gsp-surround-linux/issues</url>
+  <provides>
+    <binary>gsp-surround</binary>
+  </provides>
+  <keywords>
+    <keyword>headset</keyword>
+    <keyword>surround</keyword>
+    <keyword>7.1</keyword>
+    <keyword>equalizer</keyword>
+    <keyword>PipeWire</keyword>
+  </keywords>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

@@ -2,6 +2,9 @@
 Description=gsp-surround: virtual 7.1 surround for the GSP headset dongle (EQ preset, main-path sink, filter links)
 After=pipewire.service wireplumber.service pipewire-pulse.service
 PartOf=pipewire.service
+# does nothing until the setup has written the PipeWire filter config (matters for the packaged unit,
+# which is enabled for every user as soon as the package is installed)
+ConditionPathExists=%E/pipewire/pipewire.conf.d/gsp-surround.conf
 
 [Service]
 Type=oneshot

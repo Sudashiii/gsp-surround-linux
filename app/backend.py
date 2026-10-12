@@ -21,8 +21,14 @@ CONF = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "gsp-surround
 PW_CONF = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "pipewire/pipewire.conf.d/gsp-surround.conf"
 IR = DATA / "ir.wav"
 PROFILE_JSON = DATA / "profile.json"
-UDEV_RULE = Path("/etc/udev/rules.d/70-gsp-surround.rules")
+UDEV_RULE_NAME = "70-gsp-surround.rules"
+# where udev reads rules from, highest priority first (the same list as in scripts/common.sh)
+UDEV_RULE_DIRS = [Path(d) for d in ("/etc/udev/rules.d", "/run/udev/rules.d", "/usr/local/lib/udev/rules.d",
+                                    "/usr/lib/udev/rules.d", "/lib/udev/rules.d")]
 SERVICE = "gsp-surround.service"
+# where systemd looks for user units installed for everybody (a packaged unit lives there)
+SYSTEM_USER_UNIT_DIRS = [Path(d) for d in ("/etc/systemd/user", "/usr/local/lib/systemd/user",
+                                           "/usr/lib/systemd/user", "/lib/systemd/user")]
 NODE_IN, NODE_OUT, NODE_MAIN = "effect_input.gsp_surround", "effect_output.gsp_surround", "gsp_surround.main"
 REPO_URL = "https://github.com/Sudashiii/gsp-surround-linux"
 MANUAL_URL = REPO_URL + "#manual-installation"
@@ -66,6 +72,39 @@ def _read(path, default=""):
         return Path(path).read_text().strip() or default
     except OSError:
         return default
+
+
+VERSION = _read(ROOT / "VERSION", "dev")
+
+
+def is_packaged(root=ROOT):
+    """Installed by the .deb or `make install` (files in a system directory, marked by a PACKAGED file)?"""
+    return (Path(root) / "PACKAGED").exists()
+
+
+def is_self_hosted(root=ROOT, data=DATA):
+    """Is this the copy the per-user installer made? Then uninstalling removes the running app itself."""
+    return Path(root).resolve() == (Path(data) / "app").resolve()
+
+
+def udev_rule_path(dirs=UDEV_RULE_DIRS):
+    """The udev rule file in effect for the app (the first directory wins, like in udev), or None."""
+    for d in dirs:
+        path = Path(d) / UDEV_RULE_NAME
+        if path.is_file():
+            return path
+    return None
+
+
+def service_enabled(dirs=SYSTEM_USER_UNIT_DIRS):
+    """Is the background service started together with PipeWire?
+
+    `systemctl is-enabled` only counts links in /etc and in the home folder (the per-user install). The
+    unit of the .deb is enabled by a link shipped in /usr/lib/systemd/user, which systemd honours at run
+    time but reports as "disabled", so that link is looked for as well."""
+    if _out(["systemctl", "--user", "is-enabled", SERVICE]).strip() == "enabled":
+        return True
+    return any((Path(d) / "pipewire.service.wants" / SERVICE).exists() for d in dirs)
 
 
 def saved_preset():
@@ -220,11 +259,12 @@ def run_checks():
     else:
         c.append(Check("filter", "Virtual 7.1 device", NODE_IN in nodes,
                        "GSP Virtual Surround 7.1" if NODE_IN in nodes else "installed but not running - restart PipeWire or log out/in"))
-    enabled = _out(["systemctl", "--user", "is-enabled", SERVICE]).strip() == "enabled"
+    enabled = service_enabled()
     c.append(Check("service", "Background service", enabled,
                    "re-applies everything at login and plug-in" if enabled else "not installed"))
-    c.append(Check("udev", "Device rule (udev)", UDEV_RULE.exists(),
-                   str(UDEV_RULE) if UDEV_RULE.exists() else "not installed (needs your password once)"))
+    rule = udev_rule_path()
+    c.append(Check("udev", "Device rule (udev)", rule is not None,
+                   str(rule) if rule else "not installed (needs your password once)"))
 
     dongle = find_dongle()
     c.append(Check("dongle", "Headset dongle", True if dongle else None,

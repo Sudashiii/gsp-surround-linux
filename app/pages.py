@@ -181,7 +181,10 @@ class SoundPage(Adw.PreferencesPage):
 
 
 class SetupPage(Gtk.Box):
-    """What virtual surround needs on this system, with the buttons to set it up or remove it."""
+    """What virtual surround needs on this system, with the buttons to set it up or remove it.
+
+    `packaged`: the app was installed by the .deb or `make install`. Then the files, the device rule and
+    the service are already there, so the buttons only set up (or remove) the user's own part."""
 
     __gsignals__ = {
         "install-requested": _signal(),
@@ -189,14 +192,19 @@ class SetupPage(Gtk.Box):
         "uninstall-requested": _signal(),
     }
 
-    def __init__(self) -> None:
+    def __init__(self, packaged: bool = False) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        self._packaged = packaged
         self._rows: dict[str, tuple[Adw.ActionRow, Gtk.Image]] = {}
         self._checks = Adw.PreferencesGroup(title="Requirements", description="Checking…")
         manual = Gtk.LinkButton(uri=be.MANUAL_URL, label="Prefer to do it yourself? Manual installation")
         manual.set_margin_top(6)
+        version = Gtk.Label(label=f"GSP Surround {be.VERSION}", margin_top=12)
+        version.add_css_class("dim-label")
+        version.add_css_class("caption")
         links = Adw.PreferencesGroup()
         links.add(manual)
+        links.add(version)
         page = Adw.PreferencesPage(vexpand=True)    # scrolls; the action bar below stays in view
         page.add(self._checks)
         page.add(links)
@@ -204,10 +212,10 @@ class SetupPage(Gtk.Box):
         self.append(self._build_action_bar())
 
     def _build_action_bar(self) -> Gtk.ActionBar:
-        self._install_button = Gtk.Button(label="Install everything")
+        self._install_button = Gtk.Button(label=self._install_label(all_ok=False))
         self._install_button.add_css_class("suggested-action")
         self._apply_button = Gtk.Button(label="Re-apply")
-        self._uninstall_button = Gtk.Button(label="Uninstall")
+        self._uninstall_button = Gtk.Button(label="Remove setup" if self._packaged else "Uninstall")
         self._uninstall_button.add_css_class("destructive-action")
         buttons = Gtk.Box(spacing=8)
         for button, signal in ((self._install_button, "install-requested"),
@@ -234,10 +242,20 @@ class SetupPage(Gtk.Box):
                 icon.remove_css_class(other_style)
             icon.add_css_class(style)
         all_ok = all(check.ok is not False for check in checks)
-        self._install_button.set_label("Reinstall" if all_ok else "Install everything")
-        self._checks.set_description(
-            "Everything is set up" if all_ok else
-            "Something is missing – “Install everything” sets it up (asks for your password once)")
+        self._install_button.set_label(self._install_label(all_ok))
+        self._checks.set_description(self._summary(all_ok))
+
+    def _install_label(self, all_ok: bool) -> str:
+        if self._packaged:
+            return "Set up again" if all_ok else "Set up"
+        return "Reinstall" if all_ok else "Install everything"
+
+    def _summary(self, all_ok: bool) -> str:
+        if all_ok:
+            return "Everything is set up"
+        if self._packaged:
+            return "Something is missing – “Set up” takes care of it"
+        return "Something is missing – “Install everything” sets it up (asks for your password once)"
 
     def _add_row(self, check: be.Check) -> tuple[Adw.ActionRow, Gtk.Image]:
         row = Adw.ActionRow(title=check.title, use_markup=False)

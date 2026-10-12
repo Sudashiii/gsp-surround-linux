@@ -86,12 +86,14 @@ class Window(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app, title="GSP Surround", default_width=480, default_height=520)
         self._busy = False
+        self._packaged = be.is_packaged()     # installed by the .deb / make install: only the user's setup is ours
+        self._poll_error = ""                 # last problem while looking for the dongle, so it is logged once
         self._ready: bool | None = None       # setup complete? None until the first check is in
         self._dongle_key: tuple | None = None  # (usb id, card) of the dongle seen last, to notice plug/unplug
         self._check_serial = 0                # numbers the setup checks, so a stale result can be dropped
 
         self.sound_page = pages.SoundPage()
-        self.setup_page = pages.SetupPage()
+        self.setup_page = pages.SetupPage(packaged=self._packaged)
         self.log_page = pages.LogPage()
         self._connect_pages()
 
@@ -156,8 +158,10 @@ class Window(Adw.ApplicationWindow):
         self.setup_page.set_actions_enabled(install=not self._busy, manage=usable)
 
     # --- background tasks ---------------------------------------------------------------------
-    def run_task(self, label: str, fn: Callable[..., int], *args, show_log: bool = False) -> None:
-        """Run a backend action in a thread; its output goes to the log, then everything is re-checked."""
+    def run_task(self, label: str, fn: Callable[..., int], *args, show_log: bool = False,
+                 on_success: Callable[[], None] | None = None) -> None:
+        """Run a backend action in a thread; its output goes to the log, then everything is re-checked
+        (or, if given, `on_success` runs instead after a success)."""
         if self._busy:
             return
         self._set_busy(True)
@@ -171,12 +175,15 @@ class Window(Adw.ApplicationWindow):
             except Exception as exc:          # e.g. bash is missing: say why and keep the UI usable
                 call_in_main(self.log_page.add_line, f"error: {exc}")
                 rc = 1
-            call_in_main(self._task_finished, label, rc)
+            call_in_main(self._task_finished, label, rc, on_success)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _task_finished(self, label: str, rc: int) -> None:
+    def _task_finished(self, label: str, rc: int, on_success: Callable[[], None] | None = None) -> None:
         self._set_busy(False)
+        if rc == 0 and on_success:
+            on_success()
+            return
         if rc == 0:
             self._toast(f"{label}: done")
         else:
@@ -210,10 +217,19 @@ class Window(Adw.ApplicationWindow):
         self._sync_controls()
 
     def _poll_device(self) -> bool:
-        dongle = be.find_dongle()
+        try:
+            dongle = be.find_dongle()
+            cards = be.untested_cards()
+            manual = be.manual_device()
+        except Exception as exc:              # e.g. the app's own files were removed while it runs
+            message = f"looking for the dongle failed: {exc}"
+            if message != self._poll_error:   # the poll runs every 2 s: say it once
+                self._poll_error = message
+                self.log_page.add_line(message)
+            return GLib.SOURCE_CONTINUE
+        self._poll_error = ""
         self.sound_page.show_dongle(dongle)
-        self.sound_page.show_untested(be.untested_cards(), be.manual_device(),
-                                      visible=not (dongle and dongle.known))
+        self.sound_page.show_untested(cards, manual, visible=not (dongle and dongle.known))
         key = (dongle.usbid, dongle.card) if dongle else None
         if key != self._dongle_key:
             self._dongle_key = key
@@ -240,18 +256,23 @@ class Window(Adw.ApplicationWindow):
         self.show_page(PAGE_SETUP)
 
     def _on_install_requested(self, _page: pages.SetupPage) -> None:
-        self.run_task("Install", be.install, show_log=True)
+        self.run_task("Set up" if self._packaged else "Install", be.install, show_log=True)
 
     def _on_apply_requested(self, _page: pages.SetupPage) -> None:
         self.run_task("Re-apply", be.apply, show_log=True)
 
     def _on_uninstall_requested(self, _page: pages.SetupPage) -> None:
-        dialog = Adw.MessageDialog(
-            transient_for=self, heading="Uninstall virtual surround?",
-            body="Removes the virtual 7.1 device, the background service, the device rule "
-                 "and the downloaded filter file. Your preset settings are kept.")
+        if self._packaged:
+            heading, action = "Remove your setup?", "Remove setup"
+            body = ("Removes the virtual 7.1 device and the downloaded filter file of your account. The app "
+                    "itself stays installed; remove it in your software manager. Your preset settings are kept.")
+        else:
+            heading, action = "Uninstall virtual surround?", "Uninstall"
+            body = ("Removes the virtual 7.1 device, the background service, the device rule "
+                    "and the downloaded filter file. Your preset settings are kept.")
+        dialog = Adw.MessageDialog(transient_for=self, heading=heading, body=body)
         dialog.add_response("cancel", "Cancel")
-        dialog.add_response("remove", "Uninstall")
+        dialog.add_response("remove", action)
         dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.set_default_response("cancel")
         dialog.set_close_response("cancel")
@@ -259,8 +280,21 @@ class Window(Adw.ApplicationWindow):
         dialog.present()
 
     def _on_uninstall_response(self, _dialog: Adw.MessageDialog, response: str) -> None:
-        if response == "remove":
-            self.run_task("Uninstall", be.uninstall, show_log=True)
+        if response != "remove":
+            return
+        # the per-user copy deletes the files this very app runs from: say goodbye and close afterwards
+        self.run_task("Remove setup" if self._packaged else "Uninstall", be.uninstall, show_log=True,
+                      on_success=self._on_app_removed if be.is_self_hosted() else None)
+
+    def _on_app_removed(self) -> None:
+        dialog = Adw.MessageDialog(transient_for=self, heading="GSP Surround was removed",
+                                   body="The app closes now. To use it again, install it again.")
+        dialog.add_response("close", "Close")
+        dialog.connect("response", self._on_app_removed_response)
+        dialog.present()
+
+    def _on_app_removed_response(self, _dialog: Adw.MessageDialog, _response: str) -> None:
+        self.get_application().quit()
 
     def _on_close_request(self, _window: Gtk.Window) -> bool:
         if self._poll_id:

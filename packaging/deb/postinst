@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+# DPKG_ROOT is set when dpkg installs into another root (chroot, image build): then there is no running
+# udev to talk to.
+root="${DPKG_ROOT:-}"
+
+if [ "$1" = configure ]; then
+    # The per-user installer of the app used to put the same rule into /etc, where it would hide the
+    # one of this package (and its updates). Remove it when it is identical.
+    old="$root/etc/udev/rules.d/70-gsp-surround.rules"
+    new="$root/usr/lib/udev/rules.d/70-gsp-surround.rules"
+    if [ -f "$old" ] && cmp -s "$old" "$new"; then
+        rm -f "$old"
+    fi
+    # make the rule effective for a dongle that is already plugged in
+    if [ -z "$root" ] && command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload || true
+        udevadm trigger --subsystem-match=hidraw --action=change || true
+    fi
+fi
+
+exit 0

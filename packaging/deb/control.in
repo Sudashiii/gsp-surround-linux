@@ -1,0 +1,21 @@
+Package: gsp-surround
+Version: @VERSION@
+Architecture: all
+Maintainer: @MAINTAINER@
+Installed-Size: @SIZE@
+Depends: python3, python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1 (>= 1.2), pipewire, pipewire-bin, pipewire-pulse, wireplumber, udev, systemd
+Recommends: pkexec | policykit-1
+Section: sound
+Priority: optional
+Homepage: https://github.com/Sudashiii/gsp-surround-linux
+Description: Virtual 7.1 surround and EQ presets for GSP headsets
+ Recreates what the Windows driver does for Sennheiser GSP gaming headsets
+ on Linux: virtual 7.1 surround through a filter measured from the original
+ driver, and the EQ presets (Off, Game, Music, eSports) of the headset dongle.
+ Made for the GSP 350 and PipeWire.
+ .
+ After installing, open "GSP Surround" from the menu, go to the Setup tab and
+ click "Set up". The filter file is downloaded once; no password is needed.
+ .
+ Not affiliated with, endorsed by or connected to Sennheiser, EPOS, Conexant
+ or Dolby Laboratories.

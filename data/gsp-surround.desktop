@@ -6,5 +6,5 @@ Exec=@BIN@
 Icon=gsp-surround
 StartupWMClass=io.github.sudashiii.GspSurround
 Terminal=false
-Categories=AudioVideo;Audio;Settings;
+Categories=AudioVideo;Audio;Mixer;
 Keywords=headset;surround;7.1;gsp;sennheiser;epos;

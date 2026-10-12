@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
 import backend as be  # noqa: E402
@@ -75,6 +76,44 @@ class Backend(unittest.TestCase):
         self.assertEqual(be.untested_cards(self.devices, self.proc), [("abcd:1234", "Some Headset")])
         (self.proc / "card2" / "usbid").write_text("dead:beef\n")
         self.assertEqual([u for u, _ in be.untested_cards(self.devices, self.proc)], ["dead:beef", "abcd:1234"])
+
+    def test_udev_rule_path_follows_udev_priority(self):
+        first, second = Path(self.tmp.name) / "etc", Path(self.tmp.name) / "usr"
+        first.mkdir()
+        second.mkdir()
+        self.assertIsNone(be.udev_rule_path([first, second]))
+        (second / be.UDEV_RULE_NAME).write_text("# the package's rule\n")
+        self.assertEqual(be.udev_rule_path([first, second]), second / be.UDEV_RULE_NAME)
+        (first / be.UDEV_RULE_NAME).write_text("# an override in /etc\n")
+        self.assertEqual(be.udev_rule_path([first, second]), first / be.UDEV_RULE_NAME)    # the first directory wins
+
+    def test_service_enabled_counts_a_link_shipped_by_a_package(self):
+        lib = Path(self.tmp.name) / "usr-lib-systemd-user"
+        (lib / "pipewire.service.wants").mkdir(parents=True)
+        with mock.patch.object(be, "_out", return_value="disabled\n"):          # what systemctl says for such a unit
+            self.assertFalse(be.service_enabled([lib]))                          # no link, not enabled
+            (lib / "gsp-surround.service").write_text("[Service]\n")
+            (lib / "pipewire.service.wants" / be.SERVICE).symlink_to("../gsp-surround.service")
+            self.assertTrue(be.service_enabled([lib]))                           # the packaged link
+            (lib / "gsp-surround.service").unlink()
+            self.assertFalse(be.service_enabled([lib]))                          # a dangling link does not count
+        with mock.patch.object(be, "_out", return_value="enabled\n"):           # the per-user install
+            self.assertTrue(be.service_enabled([]))
+
+    def test_packaged_install_is_marked_by_a_file(self):
+        root = Path(self.tmp.name) / "share"
+        root.mkdir()
+        self.assertFalse(be.is_packaged(root))
+        (root / "PACKAGED").write_text("")
+        self.assertTrue(be.is_packaged(root))
+
+    def test_self_hosted_means_running_from_the_per_user_copy(self):
+        data = Path(self.tmp.name) / "data"
+        (data / "app").mkdir(parents=True)
+        self.assertTrue(be.is_self_hosted(data / "app", data))
+        self.assertTrue(be.is_self_hosted(data / "app" / ".." / "app", data))
+        self.assertFalse(be.is_self_hosted(Path(self.tmp.name), data))               # a clone
+        self.assertFalse(be.is_self_hosted(Path("/usr/share/gsp-surround"), data))   # a system install
 
     def test_hidraw(self):
         sysfs = Path(self.tmp.name) / "hidraw"

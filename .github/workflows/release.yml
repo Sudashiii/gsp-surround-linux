@@ -1,0 +1,89 @@
+# Builds a release when a version tag (v1.2.3) is pushed: the installer (.deb), a source tarball,
+# checksums and release notes made from the commit messages, published as a GitHub release.
+# "Run workflow" (workflow_dispatch) is a rehearsal: it builds everything and keeps it as a workflow
+# artifact, but publishes nothing. Nothing built here is ever committed to the repository.
+#
+# To release: set VERSION, commit, then  git tag v$(cat VERSION) && git push origin main v$(cat VERSION)
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the release notes need the history and the previous tag
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 xvfb desktop-file-utils appstream libxml2-utils
+
+      - name: The tag must match the VERSION file
+        if: github.ref_type == 'tag'
+        run: |
+          version="$(cat VERSION)"
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match VERSION (${version}). Fix VERSION and tag again."
+            exit 1
+          fi
+
+      - name: Tests and checks
+        env:
+          GSK_RENDERER: cairo   # no GPU on the runner
+        run: |
+          xvfb-run -a make test
+          make check STRICT=1
+
+      - name: Build installer, source tarball and checksums
+        run: make artifacts
+
+      - name: Release notes from the commit messages
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            python3 packaging/release_notes.py --tag "${GITHUB_REF_NAME}" \
+              --checksums dist/SHA256SUMS > dist/release-notes.md
+          else
+            python3 packaging/release_notes.py --tag HEAD --version "$(cat VERSION)" \
+              --checksums dist/SHA256SUMS > dist/release-notes.md
+          fi
+          cat dist/release-notes.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # the only job that is allowed to create a release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: dist
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          flags=()
+          case "${version}" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "${GITHUB_REF_NAME}" \
+            "dist/gsp-surround_${version}_all.deb" "dist/gsp-surround-${version}.tar.gz" dist/SHA256SUMS \
+            --repo "${GITHUB_REPOSITORY}" --verify-tag \
+            --title "GSP Surround ${version}" --notes-file dist/release-notes.md "${flags[@]}"

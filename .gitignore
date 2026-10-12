@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+# build output: the installer and the source tarball are made by `make deb` / `make dist` and by the
+# release pipeline, never committed
+dist/
+build/

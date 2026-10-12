@@ -184,6 +184,23 @@ class SetupPageTest(unittest.TestCase):
         self.assertEqual(self.page._install_button.get_label(), "Install everything")
         self.assertIn("Something is missing", self.page._checks.get_description())
 
+    def test_wording_for_a_packaged_install(self):
+        page = pages.SetupPage(packaged=True)
+        self.assertEqual(page._install_button.get_label(), "Set up")
+        self.assertEqual(page._uninstall_button.get_label(), "Remove setup")
+        page.show_checks([be.Check("a", "A", False)])
+        self.assertEqual(page._install_button.get_label(), "Set up")
+        self.assertIn("“Set up” takes care of it", page._checks.get_description())
+        self.assertNotIn("password", page._checks.get_description())
+        page.show_checks([be.Check("a", "A", True)])
+        self.assertEqual(page._install_button.get_label(), "Set up again")
+        self.assertEqual(self.page._uninstall_button.get_label(), "Uninstall")        # the clone/per-user wording
+        self.assertEqual(self.page._install_button.get_label(), "Install everything")
+
+    def test_shows_the_version(self):
+        labels = [w.get_label() for w in descendants(self.page) if isinstance(w, Gtk.Label)]
+        self.assertIn(f"GSP Surround {be.VERSION}", labels)
+
     def test_buttons_signal_and_can_be_disabled(self):
         got = []
         for name in ("install-requested", "apply-requested", "uninstall-requested"):
@@ -240,7 +257,8 @@ class WindowTest(unittest.TestCase):
             be, run_checks=mock.Mock(side_effect=lambda: self.checks), find_dongle=mock.Mock(return_value=None),
             untested_cards=mock.Mock(return_value=[]), manual_device=mock.Mock(return_value=""),
             saved_surround=mock.Mock(return_value="on"), saved_preset=mock.Mock(return_value="game"),
-            set_manual_device=mock.Mock())
+            set_manual_device=mock.Mock(), is_packaged=mock.Mock(return_value=False),
+            is_self_hosted=mock.Mock(return_value=False))
         patcher.start()
         self.addCleanup(patcher.stop)
         self.win = gs.Window(self.app)
@@ -256,6 +274,90 @@ class WindowTest(unittest.TestCase):
     def settle(self):
         """Wait for the first setup check to arrive."""
         pump(until=lambda: self.win._ready is not None)
+
+    def new_window(self):
+        """Another window, e.g. after changing what the patched backend reports."""
+        win = gs.Window(self.app)
+
+        def close():
+            pump(until=lambda: not win._busy)
+            win.close()
+            win.destroy()
+            pump()
+
+        self.addCleanup(close)
+        return win
+
+    def test_packaged_install_uses_the_setup_wording_and_log_labels(self):
+        be.is_packaged.return_value = True
+        win = self.new_window()
+        self.assertEqual(win.setup_page._install_button.get_label(), "Set up")
+        self.assertEqual(win.setup_page._uninstall_button.get_label(), "Remove setup")
+        with mock.patch.object(be, "install", return_value=0) as install:
+            win.setup_page.emit("install-requested")
+            pump(until=lambda: install.called)
+            self.assertIn("--- Set up", win.log_page.text)
+            pump(until=lambda: not win._busy)
+
+    def test_the_uninstall_dialog_says_what_is_removed(self):
+        for packaged, heading, mentions in ((False, "Uninstall virtual surround?", "background service"),
+                                            (True, "Remove your setup?", "software manager")):
+            be.is_packaged.return_value = packaged
+            win = self.new_window()
+            shown = []
+            with mock.patch.object(Adw.MessageDialog, "present", lambda dialog: shown.append(dialog)):
+                win.setup_page.emit("uninstall-requested")
+            self.assertEqual(len(shown), 1)
+            self.assertEqual(shown[0].get_heading(), heading)
+            self.assertIn(mentions, shown[0].get_body())
+
+    def test_removing_the_app_one_runs_from_closes_it_afterwards(self):
+        be.is_self_hosted.return_value = True
+        self.settle()
+        self.win._on_app_removed = mock.Mock()                      # instead of the dialog and the quit
+        with mock.patch.object(be, "uninstall", return_value=0):
+            self.win._on_uninstall_response(None, "remove")
+            pump(until=lambda: not self.win._busy)
+        self.win._on_app_removed.assert_called_once()
+        self.assertEqual(self.win.log_page.text.count("--- Uninstall"), 1)
+
+    def test_removing_the_setup_of_a_system_install_keeps_the_app_open(self):
+        be.is_packaged.return_value = True
+        win = self.new_window()
+        win._on_app_removed = mock.Mock()
+        pump(until=lambda: win._ready is not None)
+        with mock.patch.object(be, "uninstall", return_value=0):
+            win._on_uninstall_response(None, "remove")
+            pump(until=lambda: not win._busy)
+        win._on_app_removed.assert_not_called()
+        self.assertIn("--- Remove setup", win.log_page.text)
+
+    def test_cancelling_the_uninstall_runs_nothing(self):
+        with mock.patch.object(be, "uninstall") as uninstall:
+            self.win._on_uninstall_response(None, "cancel")
+            pump()
+        uninstall.assert_not_called()
+        self.assertFalse(self.win._busy)
+
+    def test_on_success_runs_only_after_a_success(self):
+        self.settle()
+        done = mock.Mock()
+        self.win.run_task("Fails", lambda on_line: 1, on_success=done)
+        pump(until=lambda: not self.win._busy)
+        done.assert_not_called()
+        self.win.run_task("Works", lambda on_line: 0, on_success=done)
+        pump(until=lambda: not self.win._busy)
+        done.assert_called_once()
+
+    def test_polling_survives_missing_files_and_says_so_once(self):
+        self.settle()
+        be.find_dongle.side_effect = FileNotFoundError("devices.conf")
+        self.assertTrue(self.win._poll_device())                   # keeps polling instead of dying
+        self.assertTrue(self.win._poll_device())
+        self.assertEqual(self.win.log_page.text.count("looking for the dongle failed: devices.conf"), 1)
+        be.find_dongle.side_effect = None
+        self.assertTrue(self.win._poll_device())
+        self.assertEqual(self.win._poll_error, "")                  # recovered: the next problem is reported again
 
     def test_icons_are_found(self):
         theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())

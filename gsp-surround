@@ -7,6 +7,7 @@
 #   gsp-surround install [--yes] [--ir FILE] [--profile NAME]
 #   gsp-surround apply                re-apply (what the background service does at login / plug-in)
 #   gsp-surround uninstall
+#   gsp-surround --version
 here="$(dirname "$(readlink -f "$0")")"
 cmd="${1:-app}"; [ $# -gt 0 ] && shift
 case "$cmd" in
@@ -27,6 +28,7 @@ case "$cmd" in
   install)   exec bash "$here/scripts/install.sh" "$@" ;;
   apply)     exec bash "$here/scripts/apply.sh" ;;
   uninstall) exec bash "$here/scripts/uninstall.sh" ;;
-  -h|--help|help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -V|--version|version) echo "gsp-surround $(cat "$here/VERSION" 2>/dev/null || echo dev)" ;;
+  -h|--help|help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) echo "unknown command '$cmd' (try: $0 help)"; exit 1 ;;
 esac

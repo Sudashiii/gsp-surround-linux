@@ -11,7 +11,38 @@ GSP_PROFILE_JSON="$GSP_DATA/profile.json"
 NODE_IN="effect_input.gsp_surround"
 NODE_OUT="effect_output.gsp_surround"
 NODE_MAIN="gsp_surround.main"
-UDEV_RULE="/etc/udev/rules.d/70-gsp-surround.rules"
+UDEV_RULE_NAME="70-gsp-surround.rules"
+# directories udev reads rules from, highest priority first (GSP_UDEV_DIRS="a:b" overrides, for tests)
+IFS=: read -r -a UDEV_RULE_DIRS <<< "${GSP_UDEV_DIRS:-/etc/udev/rules.d:/run/udev/rules.d:/usr/local/lib/udev/rules.d:/usr/lib/udev/rules.d:/lib/udev/rules.d}"
+UDEV_RULE="${UDEV_RULE_DIRS[0]}/$UDEV_RULE_NAME"   # the file this app writes (/etc); it overrides a packaged rule
+
+# --- install layout ---------------------------------------------------------------------------
+# Installed by `make install` or the .deb (files in a system directory, marked by a PACKAGED file)?
+# Then install.sh/uninstall.sh only handle the per-user setup and never touch the app files.
+packaged() { [ -e "$GSP_ROOT/PACKAGED" ]; }
+
+# the udev rule file that is in effect for this app (the first directory wins, like in udev); empty if none
+installed_udev_rule() {
+  local d
+  for d in "${UDEV_RULE_DIRS[@]}"; do
+    [ -f "$d/$UDEV_RULE_NAME" ] && { echo "$d/$UDEV_RULE_NAME"; return; }
+  done
+  return 0
+}
+
+# udev rules for "vid:pid" ids: HID access for the logged-in user (EQ preset) and start of the user
+# service when the dongle is plugged in. install.sh and the Makefile both use this, so they agree.
+udev_rules() {
+  local id seen=" "
+  echo "# gsp-surround: give the logged-in user access to the dongle's HID interface (EQ preset) and"
+  echo "# start the user's gsp-surround.service when the dongle is plugged in."
+  for id in "$@"; do
+    [ -n "$id" ] || continue
+    case "$seen" in *" $id "*) continue;; esac
+    seen="$seen$id "
+    echo "SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"${id%%:*}\", ATTRS{idProduct}==\"${id##*:}\", TAG+=\"uaccess\", TAG+=\"systemd\", ENV{SYSTEMD_USER_WANTS}+=\"gsp-surround.service\""
+  done
+}
 
 # --- saved state ------------------------------------------------------------------------------
 saved_preset()   { cat "$GSP_CONF/preset" 2>/dev/null || echo game; }
