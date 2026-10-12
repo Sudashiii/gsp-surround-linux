@@ -43,8 +43,8 @@ git clone https://github.com/Sudashiii/gsp-surround-linux
 cd gsp-surround-linux
 ./gsp-surround
 ```
-1. Click **Install everything**. It asks for your password once, to install missing packages and
-   a device rule.
+1. Open the **Setup** tab and click **Install everything**. It asks for your password once, to
+   install missing packages and a device rule.
 2. **Unplug and replug the dongle** once.
 3. Choose **GSP Virtual Surround 7.1** as output if it isn't already the default. In games, select
    7.1 / surround in the audio settings if the game asks.
@@ -55,6 +55,12 @@ command is available in new terminals.
 If the app doesn't start, the GTK 4 / libadwaita Python bindings are missing. `./gsp-surround`
 prints the command for your distribution, or run `./gsp-surround install` to install everything
 from the terminal.
+
+## The app
+- **Sound**: the connected headset, virtual 7.1 surround on/off and the EQ preset.
+- **Setup**: what virtual surround needs on your system, with **Install everything** (or
+  **Reinstall**), **Re-apply** and **Uninstall**.
+- **Logs**: the output of what the app ran, with **Copy** (handy for a bug report) and **Clear**.
 
 ## Requirements
 - Linux with **PipeWire** and **WirePlumber**, the default on current Fedora, Ubuntu (22.10 and
@@ -109,23 +115,24 @@ gsp-surround uninstall
 - Run `gsp-surround check` and look for `[FAIL]` lines.
 - **EQ presets have no effect / "EQ control: no access":** unplug and replug the dongle once after
   installing.
-- **No sound on the virtual device:** check that "Sound routed to the dongle" is ✓. If not, click
-  **Re-apply** or replug the dongle.
+- **No sound on the virtual device:** check that "Sound routed to the dongle" is ✓ in the **Setup**
+  tab. If not, click **Re-apply** or replug the dongle.
 - Don't switch the dongle's profile to "Pro Audio" in your sound settings. The app needs the
   normal profile.
 - The surround button on the headset does nothing; on Windows the Sennheiser app handled it. Use
   the app instead.
 
 ## Uninstall
-Click **Uninstall** in the app, or run `gsp-surround uninstall`. Your preset settings in
-`~/.config/gsp-surround` are kept.
+Click **Uninstall** in the app's **Setup** tab, or run `gsp-surround uninstall`. Your preset
+settings in `~/.config/gsp-surround` are kept.
 
 ## Other headsets
 Other GSP headsets that came with the same dongle and the same Sennheiser/Conexant drivers
 probably work the same way. To try one:
 
-1. Plug it in and open the app. If it isn't detected, pick it under **Use an untested USB headset**.
-   EQ presets are not sent to untested dongles; virtual surround uses the GSP 350 filter.
+1. Plug it in and open the app. If it isn't detected, pick it under **Use an untested USB headset**
+   in the **Sound** tab. EQ presets are not sent to untested dongles; virtual surround uses the
+   GSP 350 filter.
 2. If it works, or doesn't, please open an issue with the output of `lsusb` and `gsp-surround check`.
 
 If your headset's driver sounds different from the GSP 350's, its filter has to be measured on
@@ -133,12 +140,17 @@ Windows; see [gsp-surround-irs](https://github.com/Sudashiii/gsp-surround-irs/bl
 
 ## Development
 ```bash
-python3 -m unittest discover tests     # backend tests (no hardware needed)
+python3 -m unittest discover tests     # backend and GUI tests (no hardware needed)
 ```
-- `app/gsp_surround.py`: the GTK window.
+The GUI tests need GTK 4, libadwaita and a display (a desktop session, or `xvfb-run`); without one
+they are skipped.
+- `app/gsp_surround.py`: the GTK app and window (header with the tabs, background tasks).
+- `app/pages.py`: the Sound, Setup and Logs pages.
 - `app/backend.py`: checks and actions.
 - `scripts/`: the actual work, which also runs without the app.
 - `data/devices.conf`: the list of supported dongles.
+- `data/icons/`: the app icon and the small headset icon used inside the app. The latter is
+  `-symbolic`, so it has to stay fill-only (no strokes) for GTK to recolor it in dark mode.
 
 ## License
 MIT, see [LICENSE](LICENSE). The filter files in gsp-surround-irs are not covered by this license.

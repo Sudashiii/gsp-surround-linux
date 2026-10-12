@@ -71,6 +71,11 @@ class Backend(unittest.TestCase):
         d = be.find_dongle(self.devices, "abcd:1234", self.proc)
         self.assertEqual((d.card, d.known, d.hid_eq, d.name), (3, False, False, "Some Headset"))
 
+    def test_untested_cards(self):
+        self.assertEqual(be.untested_cards(self.devices, self.proc), [("abcd:1234", "Some Headset")])
+        (self.proc / "card2" / "usbid").write_text("dead:beef\n")
+        self.assertEqual([u for u, _ in be.untested_cards(self.devices, self.proc)], ["dead:beef", "abcd:1234"])
+
     def test_hidraw(self):
         sysfs = Path(self.tmp.name) / "hidraw"
         for n, hid in ((0, "0003:0000046D:0000C52B"), (3, "0003:00001395:0000005D")):

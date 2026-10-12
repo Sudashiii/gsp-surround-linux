@@ -108,7 +108,7 @@ chmod +x "$app/gsp-surround" "$app"/scripts/*.sh "$app"/scripts/*.py
 mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications" "$HOME/.local/share/icons/hicolor/scalable/apps"
 ln -sf "$app/gsp-surround" "$HOME/.local/bin/gsp-surround"
 sed "s|@BIN@|$app/gsp-surround|" "$app/data/gsp-surround.desktop" > "$HOME/.local/share/applications/gsp-surround.desktop"
-cp "$app/data/gsp-surround.svg" "$HOME/.local/share/icons/hicolor/scalable/apps/gsp-surround.svg"
+cp "$app/data/icons/hicolor/scalable/apps/gsp-surround.svg" "$HOME/.local/share/icons/hicolor/scalable/apps/gsp-surround.svg"
 echo "  $app, app menu entry \"GSP Surround\""
 
 # --- filter file --------------------------------------------------------------------------------

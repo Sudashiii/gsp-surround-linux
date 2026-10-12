@@ -1,281 +1,288 @@
 #!/usr/bin/env python3
 """GSP Surround: small GTK4/libadwaita app for virtual 7.1 surround and the EQ presets of
-GSP-family headset dongles on Linux. All work is done by backend.py and scripts/."""
+GSP-family headset dongles on Linux. All work is done by backend.py and scripts/; the tab pages
+are in pages.py."""
+from __future__ import annotations
+
 import sys
 import threading
 from pathlib import Path
+from typing import Callable
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import backend as be  # noqa: E402
+import pages  # noqa: E402
 
 APP_ID = "io.github.sudashiii.GspSurround"
-ICON_OK, ICON_BAD, ICON_NA = "emblem-ok-symbolic", "dialog-warning-symbolic", "list-remove-symbolic"
+ICON_APP = "gsp-surround"
+ICON_DIR = be.ROOT / "data/icons"
+POLL_SECONDS = 2                  # how often to look for the dongle
+RECHECK_DELAY_SECONDS = 3         # the service needs a moment after a plug-in before nodes and links exist
+PAGE_SOUND, PAGE_SETUP, PAGE_LOGS = "sound", "setup", "logs"
+PRESET_LABELS = {pid: label for pid, label, _text in be.PRESETS}
+
+
+def call_in_main(fn: Callable, *args) -> None:
+    """Run fn(*args) on the GTK main loop. This is how worker threads hand results to the UI."""
+    def run() -> bool:
+        fn(*args)
+        return GLib.SOURCE_REMOVE
+
+    GLib.idle_add(run)
+
+
+def register_icons() -> None:
+    """Make the icons that ship with this copy of the app known to GTK (so a plain clone works too)
+    and use the app icon for the windows.
+
+    The directory is appended on purpose: for the same theme directory a later search path entry
+    wins in GTK 4.14, so this copy's icons beat an older installed copy of the same name."""
+    Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).add_search_path(str(ICON_DIR))
+    Gtk.Window.set_default_icon_name(ICON_APP)
+
+
+class TabSwitcher(Gtk.Box):
+    """Compact tabs for the header bar: one toggle button per page of a Gtk.Stack.
+
+    Gtk.StackSwitcher and Adw.ViewSwitcher need about 400 px, more than a 480 px header has left
+    once the window buttons are in (KDE puts three of them there); this needs about 225 px."""
+
+    def __init__(self, stack: Gtk.Stack) -> None:
+        super().__init__(homogeneous=True)
+        self.add_css_class("linked")
+        self._stack = stack
+        self._buttons: dict[str, Gtk.ToggleButton] = {}
+        stack_pages = stack.get_pages()
+        first = None
+        for i in range(stack_pages.get_n_items()):
+            page = stack_pages.get_item(i)
+            button = Gtk.ToggleButton(label=page.get_title(), group=first)
+            button.connect("toggled", self._on_toggled, page.get_name())
+            self.append(button)
+            self._buttons[page.get_name()] = button
+            first = first or button
+        stack.connect("notify::visible-child-name", self._on_visible_child_changed)
+        self._on_visible_child_changed(stack, None)
+
+    def _on_toggled(self, button: Gtk.ToggleButton, name: str) -> None:
+        if button.get_active():
+            self._stack.set_visible_child_name(name)
+
+    def _on_visible_child_changed(self, stack: Gtk.Stack, _pspec) -> None:
+        button = self._buttons.get(stack.get_visible_child_name())
+        if button:
+            button.set_active(True)
 
 
 class Window(Adw.ApplicationWindow):
-    def __init__(self, app):
-        super().__init__(application=app, title="GSP Surround")
-        self.set_default_size(480, 820)
-        self.busy = False
-        self.updating = False          # True while the UI is set from saved state (no actions)
-        self.ready = False
-        self.dongle_key = None
-        self.untested_ids = None
+    """Header with the tabs, the three pages, and the glue between pages and backend."""
 
+    def __init__(self, app: Adw.Application) -> None:
+        super().__init__(application=app, title="GSP Surround", default_width=480, default_height=520)
+        self._busy = False
+        self._ready: bool | None = None       # setup complete? None until the first check is in
+        self._dongle_key: tuple | None = None  # (usb id, card) of the dongle seen last, to notice plug/unplug
+        self._check_serial = 0                # numbers the setup checks, so a stale result can be dropped
+
+        self.sound_page = pages.SoundPage()
+        self.setup_page = pages.SetupPage()
+        self.log_page = pages.LogPage()
+        self._connect_pages()
+
+        self._stack = Gtk.Stack(vexpand=True)
+        for name, title, page in ((PAGE_SOUND, "Sound", self.sound_page),
+                                  (PAGE_SETUP, "Setup", self.setup_page),
+                                  (PAGE_LOGS, "Logs", self.log_page)):
+            self._stack.add_titled(page, name, title)
+        self._spinner = Gtk.Spinner()
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(self._build_header())
+        content.append(self._stack)
+        self._toasts = Adw.ToastOverlay(child=content)
+        self.set_content(self._toasts)
+
+        self._sync_controls()
+        self.refresh()
+        self._poll_id = GLib.timeout_add_seconds(POLL_SECONDS, self._poll_device)
+        self.connect("close-request", self._on_close_request)
+
+    # --- building -----------------------------------------------------------------------------
+    def _build_header(self) -> Adw.HeaderBar:
         header = Adw.HeaderBar()
         recheck = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Re-check")
-        recheck.connect("clicked", lambda *_: self.refresh())
+        recheck.update_property([Gtk.AccessibleProperty.LABEL], ["Re-check"])
+        recheck.connect("clicked", lambda _button: self.refresh())
         header.pack_start(recheck)
-        self.spinner = Gtk.Spinner()
-        header.pack_end(self.spinner)
+        self._tabs = TabSwitcher(self._stack)
+        header.set_title_widget(self._tabs)
+        header.pack_end(self._spinner)
+        return header
 
-        page = Adw.PreferencesPage()
-        page.set_vexpand(True)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.append(header)
-        box.append(page)
-        self.toasts = Adw.ToastOverlay()
-        self.toasts.set_child(box)
-        self.set_content(self.toasts)
-
-        # --- headset ---------------------------------------------------------------------------
-        g = Adw.PreferencesGroup(title="Headset")
-        self.dev_row = Adw.ActionRow(title="Looking for the dongle…")
-        self.dev_row.add_prefix(Gtk.Image(icon_name="audio-headphones-symbolic", pixel_size=32))
-        g.add(self.dev_row)
-        self.untested_row = Adw.ComboRow(title="Use an untested USB headset",
-                                         subtitle="Only if your GSP dongle is not detected. Please report it if it works.")
-        self.untested_model = Gtk.StringList()
-        self.untested_row.set_model(self.untested_model)
-        self.untested_row.connect("notify::selected", self.on_untested)
-        g.add(self.untested_row)
-        page.add(g)
-
-        # --- surround + presets -----------------------------------------------------------------
-        self.sound_group = Adw.PreferencesGroup(title="Sound")
-        row = Adw.ActionRow(title="Virtual 7.1 surround",
-                            subtitle="Off: plain stereo straight to the headset")
-        self.surround_sw = Gtk.Switch(valign=Gtk.Align.CENTER)
-        self.surround_sw.connect("notify::active", self.on_surround)
-        row.add_suffix(self.surround_sw)
-        row.set_activatable_widget(self.surround_sw)
-        self.sound_group.add(row)
-        page.add(self.sound_group)
-
-        self.preset_group = Adw.PreferencesGroup(title="Preset")
-        bbox = Gtk.Box(spacing=0, homogeneous=True, margin_top=4)
-        bbox.add_css_class("linked")
-        self.preset_btns = {}
-        first = None
-        for pid, label, _ in be.PRESETS:
-            b = Gtk.ToggleButton(label=label)
-            if first:
-                b.set_group(first)
-            first = first or b
-            b.connect("toggled", self.on_preset, pid)
-            bbox.append(b)
-            self.preset_btns[pid] = b
-        self.preset_group.add(bbox)
-        page.add(self.preset_group)
-
-        # --- setup ------------------------------------------------------------------------------
-        self.setup_group = Adw.PreferencesGroup(title="Setup",
-                                                description="What virtual surround needs on this system")
-        self.check_rows = {}
-        page.add(self.setup_group)
-
-        g = Adw.PreferencesGroup()
-        btns = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER)
-        self.install_btn = Gtk.Button(label="Install everything")
-        self.install_btn.add_css_class("suggested-action")
-        self.install_btn.add_css_class("pill")
-        self.install_btn.connect("clicked", lambda *_: self.run_bg("Install", be.install))
-        self.apply_btn = Gtk.Button(label="Re-apply")
-        self.apply_btn.add_css_class("pill")
-        self.apply_btn.connect("clicked", lambda *_: self.run_bg("Re-apply", be.apply))
-        self.uninstall_btn = Gtk.Button(label="Uninstall")
-        self.uninstall_btn.add_css_class("destructive-action")
-        self.uninstall_btn.add_css_class("pill")
-        self.uninstall_btn.connect("clicked", self.on_uninstall)
-        for b in (self.install_btn, self.apply_btn, self.uninstall_btn):
-            btns.append(b)
-        g.add(btns)
-        manual = Gtk.LinkButton(uri=be.MANUAL_URL, label="Prefer to do it yourself? Manual installation")
-        manual.set_margin_top(6)
-        g.add(manual)
-
-        self.log_buf = Gtk.TextBuffer()
-        view = Gtk.TextView(buffer=self.log_buf, editable=False, monospace=True,
-                            wrap_mode=Gtk.WrapMode.WORD_CHAR, top_margin=6, bottom_margin=6,
-                            left_margin=6, right_margin=6)
-        self.log_scroll = Gtk.ScrolledWindow(min_content_height=200, child=view)
-        self.log_exp = Gtk.Expander(label="Log", child=self.log_scroll, margin_top=6)
-        g.add(self.log_exp)
-        page.add(g)
-
-        self.refresh()
-        GLib.timeout_add_seconds(2, self.poll_device)
+    def _connect_pages(self) -> None:
+        self.sound_page.connect("surround-toggled", self._on_surround_toggled)
+        self.sound_page.connect("preset-selected", self._on_preset_selected)
+        self.sound_page.connect("headset-selected", self._on_headset_selected)
+        self.sound_page.connect("setup-requested", self._on_setup_requested)
+        self.setup_page.connect("install-requested", self._on_install_requested)
+        self.setup_page.connect("apply-requested", self._on_apply_requested)
+        self.setup_page.connect("uninstall-requested", self._on_uninstall_requested)
 
     # --- helpers ------------------------------------------------------------------------------
-    def toast(self, text):
-        self.toasts.add_toast(Adw.Toast(title=text, timeout=3))
+    def show_page(self, name: str) -> None:
+        self._stack.set_visible_child_name(name)
 
-    def log(self, line):
-        self.log_buf.insert(self.log_buf.get_end_iter(), line + "\n")
-        adj = self.log_scroll.get_vadjustment()
-        GLib.idle_add(lambda: adj.set_value(adj.get_upper()))
-        return False
+    def _toast(self, title: str, *, log_button: bool = False) -> None:
+        toast = Adw.Toast(title=title, timeout=5 if log_button else 3)
+        if log_button:
+            toast.set_button_label("Show log")
+            toast.connect("button-clicked", lambda _toast: self.show_page(PAGE_LOGS))
+        self._toasts.add_toast(toast)
 
-    def set_busy(self, busy):
-        self.busy = busy
-        self.spinner.set_spinning(busy)
-        self.update_sensitivity()
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self._spinner.set_spinning(busy)
+        self._sync_controls()
 
-    def update_sensitivity(self):
-        on = self.ready and not self.busy
-        self.sound_group.set_sensitive(on)
-        self.preset_group.set_sensitive(on)
-        self.install_btn.set_sensitive(not self.busy)
-        self.apply_btn.set_sensitive(on)
-        self.uninstall_btn.set_sensitive(on)
+    def _sync_controls(self) -> None:
+        usable = bool(self._ready) and not self._busy
+        self.sound_page.set_controls_enabled(usable)
+        self.setup_page.set_actions_enabled(install=not self._busy, manage=usable)
 
-    def run_bg(self, label, fn, *args, quiet=False):
-        """Run a backend action in a thread; output goes to the log, then re-check."""
-        if self.busy:
+    # --- background tasks ---------------------------------------------------------------------
+    def run_task(self, label: str, fn: Callable[..., int], *args, show_log: bool = False) -> None:
+        """Run a backend action in a thread; its output goes to the log, then everything is re-checked."""
+        if self._busy:
             return
-        self.set_busy(True)
-        self.log(f"--- {label}")
-        if not quiet:
-            self.log_exp.set_expanded(True)
+        self._set_busy(True)
+        self.log_page.add_line(f"--- {label}")
+        if show_log:
+            self.show_page(PAGE_LOGS)
 
-        def work():
-            rc = fn(*args, on_line=lambda l: GLib.idle_add(self.log, l))
-            GLib.idle_add(self.finished, label, rc)
+        def work() -> None:
+            try:
+                rc = fn(*args, on_line=lambda line: call_in_main(self.log_page.add_line, line))
+            except Exception as exc:          # e.g. bash is missing: say why and keep the UI usable
+                call_in_main(self.log_page.add_line, f"error: {exc}")
+                rc = 1
+            call_in_main(self._task_finished, label, rc)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def finished(self, label, rc):
-        self.set_busy(False)
-        self.toast(f"{label}: done" if rc == 0 else f"{label} failed – see the log")
-        if rc != 0:
-            self.log_exp.set_expanded(True)
+    def _task_finished(self, label: str, rc: int) -> None:
+        self._set_busy(False)
+        if rc == 0:
+            self._toast(f"{label}: done")
+        else:
+            self._toast(f"{label} failed", log_button=self._stack.get_visible_child_name() != PAGE_LOGS)
         self.refresh()
-        return False
 
     # --- state -> UI --------------------------------------------------------------------------
-    def refresh(self):
-        def work():
-            checks = be.run_checks()
-            GLib.idle_add(self.show_checks, checks)
+    def refresh(self) -> None:
+        """Run the setup checks in a thread and look for the dongle."""
+        self._check_serial += 1
+        serial = self._check_serial
+
+        def work() -> None:
+            try:
+                checks = be.run_checks()
+            except Exception as exc:
+                call_in_main(self.log_page.add_line, f"checking the setup failed: {exc}")
+                return
+            call_in_main(self._show_checks, serial, checks)
 
         threading.Thread(target=work, daemon=True).start()
-        self.poll_device()
+        self._poll_device()
 
-    def show_checks(self, checks):
-        for c in checks:
-            if c.key not in self.check_rows:
-                row = Adw.ActionRow(title=c.title)
-                icon = Gtk.Image()
-                row.add_prefix(icon)
-                self.setup_group.add(row)
-                self.check_rows[c.key] = (row, icon)
-            row, icon = self.check_rows[c.key]
-            row.set_subtitle(GLib.markup_escape_text(c.hint or ""))
-            icon.set_from_icon_name(ICON_OK if c.ok else ICON_NA if c.ok is None else ICON_BAD)
-            for cls in ("success", "warning", "dim-label"):
-                icon.remove_css_class(cls)
-            icon.add_css_class("success" if c.ok else "dim-label" if c.ok is None else "warning")
-        self.ready = be.setup_complete(checks)
-        all_ok = all(c.ok is not False for c in checks)
-        self.install_btn.set_label("Reinstall" if all_ok else "Install everything")
-        self.setup_group.set_description("Everything is set up" if all_ok else
-                                         "Something is missing – “Install everything” sets it up "
-                                         "(asks for your password once)")
-        self.updating = True
-        self.surround_sw.set_active(be.saved_surround() == "on")
-        preset = be.saved_preset()
-        if preset in self.preset_btns:
-            self.preset_btns[preset].set_active(True)
-            self.preset_group.set_description(dict((p, d) for p, _, d in be.PRESETS)[preset])
-        self.updating = False
-        self.update_sensitivity()
-        return False
+    def _show_checks(self, serial: int, checks: list[be.Check]) -> None:
+        if serial != self._check_serial:
+            return                            # a newer check is on its way
+        self._ready = be.setup_complete(checks)
+        self.setup_page.show_checks(checks)
+        self.sound_page.show_state(be.saved_surround() == "on", be.saved_preset())
+        self.sound_page.show_setup_hint(not self._ready)
+        self._sync_controls()
 
-    def poll_device(self):
+    def _poll_device(self) -> bool:
         dongle = be.find_dongle()
+        self.sound_page.show_dongle(dongle)
+        self.sound_page.show_untested(be.untested_cards(), be.manual_device(),
+                                      visible=not (dongle and dongle.known))
         key = (dongle.usbid, dongle.card) if dongle else None
-        if dongle:
-            self.dev_row.set_title(GLib.markup_escape_text(dongle.name))
-            self.dev_row.set_subtitle(f"USB {dongle.usbid}" + ("" if dongle.known else " · untested device"))
-        else:
-            self.dev_row.set_title("No GSP dongle connected")
-            self.dev_row.set_subtitle("Plug in the USB dongle of your headset")
-        known = {d.usbid for d in be.load_devices()}
-        others = [(u, n) for _, u, n in be.usb_cards() if u not in known]
-        ids = [u for u, _ in others]
-        self.untested_row.set_visible(bool(ids) and not (dongle and dongle.known))
-        if ids != self.untested_ids:
-            self.updating = True
-            self.untested_ids = ids
-            self.untested_model.splice(0, self.untested_model.get_n_items(),
-                                       ["None"] + [f"{n} ({u})" for u, n in others])
-            manual = be.manual_device()
-            self.untested_row.set_selected(ids.index(manual) + 1 if manual in ids else 0)
-            self.updating = False
-        if key != self.dongle_key:
-            self.dongle_key = key
-            self.refresh_later()
-        return True
+        if key != self._dongle_key:
+            self._dongle_key = key
+            GLib.timeout_add_seconds(RECHECK_DELAY_SECONDS, self._recheck_once)
+        return GLib.SOURCE_CONTINUE
 
-    def refresh_later(self):
-        # the service needs a moment after a plug-in before nodes and links exist
-        GLib.timeout_add_seconds(3, lambda: (self.refresh(), False)[1])
+    def _recheck_once(self) -> bool:
+        self.refresh()
+        return GLib.SOURCE_REMOVE
 
     # --- UI -> actions ------------------------------------------------------------------------
-    def on_preset(self, btn, pid):
-        if not btn.get_active():
-            return
-        self.preset_group.set_description(dict((p, d) for p, _, d in be.PRESETS)[pid])
-        if not self.updating:
-            self.run_bg(f"Preset {btn.get_label()}", be.set_preset, pid, quiet=True)
+    def _on_surround_toggled(self, _page: pages.SoundPage, on: bool) -> None:
+        self.run_task(f"Surround {'on' if on else 'off'}", be.set_surround, on)
 
-    def on_surround(self, sw, _):
-        if not self.updating:
-            on = sw.get_active()
-            self.run_bg(f"Surround {'on' if on else 'off'}", be.set_surround, on, quiet=True)
+    def _on_preset_selected(self, _page: pages.SoundPage, preset_id: str) -> None:
+        self.run_task(f"Preset {PRESET_LABELS[preset_id]}", be.set_preset, preset_id)
 
-    def on_untested(self, row, _):
-        if self.updating:
-            return
-        i = row.get_selected()
-        be.set_manual_device(self.untested_ids[i - 1] if 0 < i <= len(self.untested_ids) else "")
-        if self.ready:
-            self.run_bg("Re-apply", be.apply)
+    def _on_headset_selected(self, _page: pages.SoundPage, usbid: str) -> None:
+        be.set_manual_device(usbid)
+        if self._ready:
+            self.run_task("Re-apply", be.apply)
 
-    def on_uninstall(self, *_):
-        d = Adw.MessageDialog(transient_for=self, heading="Uninstall virtual surround?",
-                              body="Removes the virtual 7.1 device, the background service, the device rule "
-                                   "and the downloaded filter file. Your preset settings are kept.")
-        d.add_response("cancel", "Cancel")
-        d.add_response("remove", "Uninstall")
-        d.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
-        d.connect("response", lambda _d, r: r == "remove" and self.run_bg("Uninstall", be.uninstall))
-        d.present()
+    def _on_setup_requested(self, _page: pages.SoundPage) -> None:
+        self.show_page(PAGE_SETUP)
+
+    def _on_install_requested(self, _page: pages.SetupPage) -> None:
+        self.run_task("Install", be.install, show_log=True)
+
+    def _on_apply_requested(self, _page: pages.SetupPage) -> None:
+        self.run_task("Re-apply", be.apply, show_log=True)
+
+    def _on_uninstall_requested(self, _page: pages.SetupPage) -> None:
+        dialog = Adw.MessageDialog(
+            transient_for=self, heading="Uninstall virtual surround?",
+            body="Removes the virtual 7.1 device, the background service, the device rule "
+                 "and the downloaded filter file. Your preset settings are kept.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("remove", "Uninstall")
+        dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_uninstall_response)
+        dialog.present()
+
+    def _on_uninstall_response(self, _dialog: Adw.MessageDialog, response: str) -> None:
+        if response == "remove":
+            self.run_task("Uninstall", be.uninstall, show_log=True)
+
+    def _on_close_request(self, _window: Gtk.Window) -> bool:
+        if self._poll_id:
+            GLib.source_remove(self._poll_id)
+            self._poll_id = 0
+        return False                          # go on and close
 
 
 class App(Adw.Application):
-    def __init__(self):
+    def __init__(self) -> None:
+        # GTK derives the X11 window class (WM_CLASS) from the program name; the app id makes it match
+        # StartupWMClass in data/gsp-surround.desktop, so the launcher entry and its icon are used.
+        GLib.set_prgname(APP_ID)
+        GLib.set_application_name("GSP Surround")
         super().__init__(application_id=APP_ID)
 
-    def do_activate(self):
-        win = self.get_active_window() or Window(self)
-        win.present()
+    def do_startup(self) -> None:
+        Adw.Application.do_startup(self)
+        register_icons()
+
+    def do_activate(self) -> None:
+        (self.get_active_window() or Window(self)).present()
 
 
 if __name__ == "__main__":

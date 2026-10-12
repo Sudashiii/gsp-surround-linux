@@ -136,6 +136,12 @@ def find_dongle(devices=None, manual=None, proc="/proc/asound"):
     return None
 
 
+def untested_cards(devices=None, proc="/proc/asound"):
+    """[(vid:pid, card name)] of USB audio cards that are not in devices.conf (can be tried by hand)."""
+    known = {d.usbid for d in (load_devices() if devices is None else devices)}
+    return [(usbid, name) for _, usbid, name in usb_cards(proc) if usbid not in known]
+
+
 def hidraw_for(usbid, sysfs="/sys/class/hidraw"):
     vid, pid = usbid.split(":")
     want = f"HID_ID=0003:0000{vid}:0000{pid}".upper()
